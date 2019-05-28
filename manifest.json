@@ -25,6 +25,7 @@
         "scripts": ["background-script.js"]
     },
     "web_accessible_resources": [
-        "/pages/lookup_error/index.html"
+        "/pages/error/*",
+        "/pages/vestibule/*"
     ]
 }
