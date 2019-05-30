@@ -71,25 +71,6 @@ function upgradeAsync(requestDetails) {
   return asyncCancel;
 }
 
-// Adapted from Tagide/chrome-bit-domain-extension
-// Returns true if timed out, returns false if hostname showed up
-function sleep(milliseconds, queryFinishedRef) {
-  // synchronous XMLHttpRequests from Chrome extensions are not blocking event
-  // handlers. That's why we use this
-  // pretty little sleep function to try to get the API response before the
-  // request times out.
-  const start = new Date().getTime();
-  for (let i = 0; i < 1e7; i++) {
-    if ((new Date().getTime() - start) > milliseconds) {
-      return true;
-    }
-    if (queryFinishedRef.val) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function buildBlockingResponse(url, upgrade, lookupError) {
   if (lookupError) {
     return {redirectUrl:
@@ -148,12 +129,6 @@ function upgradeSync(requestDetails) {
     console.log(`Error reaching API: ${e.toString()}`);
     lookupError = true;
   }
-  // block the request until the API response is received. Block for up to two
-  // seconds.
-  if (sleep(2000, queryFinishedRef)) {
-    console.log('API timed out');
-    lookupError = true;
-  }
 
   // Check if any certs exist in the result
   const result = certResponse;
@@ -195,17 +170,6 @@ function attachRequestListener() {
     ['blocking']
   );
 }
-
-// Attaches a new listener based on the current matchHost, and then removes the
-// old listener.  The ordering is intended to prevent race conditions where the
-// protection is disabled.
-// function resetRequestListener() {
-//   const oldListener = currentRequestListener;
-
-//   attachRequestListener();
-
-//   compatBrowser.webRequest.onBeforeRequest.removeListener(oldListener);
-// }
 
 console.log(`Testing for Firefox: ${onFirefox()}`);
 
