@@ -16,16 +16,44 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with DNSSEC-HSTS.  If not, see <https://www.gnu.org/licenses/>.
 */
+/* global chrome, browser */
+'use strict';
+// Based on https://stackoverflow.com/a/45985333
+function onFirefox() {
+  if (typeof chrome !== 'undefined' && typeof browser !== 'undefined') {
+    return true;
+  }
+  return false;
+}
 
-function queryUpgradeNative(requestDetails, resolve, reject) {
+let compatBrowser;
+// Firefox supports both browser and chrome; Chromium only supports chrome;
+// Edge only supports browser.  See https://stackoverflow.com/a/45985333
+if (typeof browser !== 'undefined') {
+  console.log('Testing for browser/chrome: browser');
+  compatBrowser = browser;
+} else {
+  console.log('Testing for browser/chrome: chrome');
+  compatBrowser = chrome;
+}
+
+// Only used with native messaging
+let nativePort;
+const pendingUpgradeChecks = new Map();
+
+// host for match pattern for the URLs to upgrade
+const matchHost = '*.bit';
+let currentRequestListener;
+
+function queryUpgradeNative(requestDetails, resolve) {
   const url = new URL(requestDetails.url);
   const host = url.host;
   const hostname = url.hostname;
   const port = url.port;
-  if(! pendingUpgradeChecks.has(host)) {
+  if (!pendingUpgradeChecks.has(host)) {
     pendingUpgradeChecks.set(host, new Set());
 
-    const message = {"host": host, "hostname": hostname, "port": port};
+    const message = {host: host, hostname: hostname, port: port};
 
     // Send message to the native DNSSEC app
     nativePort.postMessage(message);
@@ -36,7 +64,7 @@ function queryUpgradeNative(requestDetails, resolve, reject) {
 // upgradeAsync function returns a Promise
 // which is resolved with the upgrade after the native DNSSEC app replies
 function upgradeAsync(requestDetails) {
-  var asyncCancel = new Promise((resolve, reject) => {
+  const asyncCancel = new Promise((resolve, reject) => {
     queryUpgradeNative(requestDetails, resolve, reject);
   });
 
@@ -46,17 +74,37 @@ function upgradeAsync(requestDetails) {
 // Adapted from Tagide/chrome-bit-domain-extension
 // Returns true if timed out, returns false if hostname showed up
 function sleep(milliseconds, queryFinishedRef) {
-  // synchronous XMLHttpRequests from Chrome extensions are not blocking event handlers. That's why we use this
-  // pretty little sleep function to try to get the API response before the request times out.
-  var start = new Date().getTime();
-  for (var i = 0; i < 1e7; i++) {
+  // synchronous XMLHttpRequests from Chrome extensions are not blocking event
+  // handlers. That's why we use this
+  // pretty little sleep function to try to get the API response before the
+  // request times out.
+  const start = new Date().getTime();
+  for (let i = 0; i < 1e7; i++) {
     if ((new Date().getTime() - start) > milliseconds) {
       return true;
     }
-    if (queryFinishedRef["val"]) {
+    if (queryFinishedRef.val) {
       return false;
     }
   }
+  return true;
+}
+
+function buildBlockingResponse(url, upgrade, lookupError) {
+  if (lookupError) {
+    return {redirectUrl:
+        compatBrowser.runtime.getURL('/pages/lookup_error/index.html')};
+  }
+  if (upgrade) {
+    if (onFirefox()) {
+      return {upgradeToSecure: true};
+    }
+    url.protocol = 'https:';
+    // Chromium and Edge don't support "upgradeToSecure",
+    // so we use "redirectUrl" instead
+    return {redirectUrl: url.toString()};
+  }
+  return {};
 }
 
 // Compatibility for Chromium/Edge, which don't support async onBeforeRequest
@@ -65,51 +113,52 @@ function upgradeSync(requestDetails) {
   const url = new URL(requestDetails.url);
   const host = url.host;
   const hostname = url.hostname;
-  const port = url.port;
+  // const port = url.port;
 
-  var certResponse;
-  var queryFinishedRef = {"val": false};
+  let certResponse;
+  const queryFinishedRef = {val: false};
 
-  var upgrade = false;
-  var lookupError = false;
+  let upgrade = false;
+  let lookupError = false;
 
   // Adapted from Tagide/chrome-bit-domain-extension
   // Get the TLSA records from the API
-  var xhr = new XMLHttpRequest();
-  var apiUrl = "http://127.0.0.1:8080/lookup?domain="+encodeURIComponent(hostname);
+  const xhr = new XMLHttpRequest();
+  const apiUrl =
+      `http://127.0.0.1:8080/lookup?domain=${encodeURIComponent(hostname)}`;
   // synchronous XMLHttpRequest is actually asynchronous
   // check out https://developer.chrome.com/extensions/webRequest
-  xhr.open("GET", apiUrl, false);
-  xhr.onreadystatechange = function() {
-    if (xhr.readyState == 4) {
-      if (xhr.status != 200) {
-        console.log("Error received from API: status " + xhr.status);
+  xhr.open('GET', apiUrl, false);
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState === 4) {
+      if (xhr.status !== 200) {
+        console.log(`Error received from API: status ${xhr.status}`);
         lookupError = true;
       }
 
       // Get the certs returned from the API server.
       certResponse = xhr.responseText;
       // Notify the sleep function that we're ready to proceed
-      queryFinishedRef["val"] = true;
+      queryFinishedRef.val = true;
     }
-  }
+  };
   try {
     xhr.send();
   } catch (e) {
-    console.log("Error reaching API: " + e.toString());
+    console.log(`Error reaching API: ${e.toString()}`);
     lookupError = true;
   }
   // block the request until the API response is received. Block for up to two
   // seconds.
   if (sleep(2000, queryFinishedRef)) {
-    console.log("API timed out");
+    console.log('API timed out');
     lookupError = true;
   }
 
   // Check if any certs exist in the result
-  var result = certResponse;
-  if (result.trim() != "") {
-    console.log("Upgraded via TLSA: " + host);
+  const result = certResponse;
+  if (result.trim() !== '') {
+    console.log(`Upgraded via TLSA: ${host}`);
     upgrade = true;
   }
 
@@ -119,24 +168,13 @@ function upgradeSync(requestDetails) {
 function upgradeCompat(requestDetails) {
   if (onFirefox()) {
     return upgradeAsync(requestDetails);
-  } else {
-    return upgradeSync(requestDetails);
   }
+  return upgradeSync(requestDetails);
 }
 
-function buildBlockingResponse(url, upgrade, lookupError) {
-  if (lookupError) {
-    return {"redirectUrl": compatBrowser.runtime.getURL("/pages/lookup_error/index.html")};
-  }
-  if (upgrade) {
-    if (onFirefox()) {
-      return {"upgradeToSecure": true};
-    }
-    url.protocol = "https:";
-    // Chromium and Edge don't support "upgradeToSecure", so we use "redirectUrl" instead
-    return {"redirectUrl": url.toString()};
-  }
-  return {};
+// Builds a match pattern for all HTTP URL's for the specified host
+function buildPattern(host) {
+  return `http://${host}/*`;
 }
 
 // Only use this on initial extension startup; afterwards you should use
@@ -145,7 +183,7 @@ function attachRequestListener() {
   // This shim function is a hack so that we can add a new listener before we
   // remove the old one.  In theory JavaScript's single-threaded nature makes
   // that irrelevant, but I don't trust browsers to behave sanely on this.
-  currentRequestListener = function(requestDetails) {
+  currentRequestListener = function (requestDetails) {
     return upgradeCompat(requestDetails);
   };
 
@@ -154,54 +192,22 @@ function attachRequestListener() {
   compatBrowser.webRequest.onBeforeRequest.addListener(
     currentRequestListener,
     {urls: [buildPattern(matchHost)]},
-    ["blocking"]
+    ['blocking']
   );
 }
 
 // Attaches a new listener based on the current matchHost, and then removes the
 // old listener.  The ordering is intended to prevent race conditions where the
 // protection is disabled.
-function resetRequestListener() {
-  var oldListener = currentRequestListener;
+// function resetRequestListener() {
+//   const oldListener = currentRequestListener;
 
-  attachRequestListener();
+//   attachRequestListener();
 
-  compatBrowser.webRequest.onBeforeRequest.removeListener(oldListener);
-}
+//   compatBrowser.webRequest.onBeforeRequest.removeListener(oldListener);
+// }
 
-// Builds a match pattern for all HTTP URL's for the specified host
-function buildPattern(host) {
-  return "http://" + host + "/*";
-}
-
-// Based on https://stackoverflow.com/a/45985333
-function onFirefox() {
-  if (typeof chrome !== "undefined" && typeof browser !== "undefined") {
-    return true;
-  }
-  return false;
-}
-
-console.log("Testing for Firefox: " + onFirefox());
-
-var compatBrowser;
-// Firefox supports both browser and chrome; Chromium only supports chrome;
-// Edge only supports browser.  See https://stackoverflow.com/a/45985333
-if (typeof browser !== "undefined") {
-  console.log("Testing for browser/chrome: browser");
-  compatBrowser = browser;
-} else {
-  console.log("Testing for browser/chrome: chrome");
-  compatBrowser = chrome;
-}
-
-// Only used with native messaging
-var nativePort;
-var pendingUpgradeChecks = new Map();
-
-// host for match pattern for the URLs to upgrade
-var matchHost = "*.bit";
-var currentRequestListener;
+console.log(`Testing for Firefox: ${onFirefox()}`);
 
 // Firefox is the only browser that supports async onBeforeRequest, and
 // therefore is the only browser that we can use native messaging with.
@@ -209,25 +215,23 @@ if (onFirefox()) {
   /*
   On startup, connect to the Namecoin "dnssec_hsts" app.
   */
-  nativePort = compatBrowser.runtime.connectNative("org.namecoin.dnssec_hsts");
+  nativePort = compatBrowser.runtime.connectNative('org.namecoin.dnssec_hsts');
 
   /*
   Listen for messages from the native DNSSEC app.
   */
-  nativePort.onMessage.addListener((response) => {
-    const host = response["host"];
-    const hasTLSA = response["hasTLSA"];
-    const ok = response["ok"];
+  nativePort.onMessage.addListener(response => {
+    const {host, hasTLSA, ok} = response;
 
     if (!ok) {
-      console.log("Native DNSSEC app error: " + host);
+      console.log(`Native DNSSEC app error: ${host}`);
     }
 
-    if(! pendingUpgradeChecks.has(host)) {
+    if (!pendingUpgradeChecks.has(host)) {
       return;
     }
 
-    for (let item of pendingUpgradeChecks.get(host)) {
+    for (const item of pendingUpgradeChecks.get(host)) {
       item(buildBlockingResponse(null, hasTLSA, !ok));
     }
 
