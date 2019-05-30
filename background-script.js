@@ -18,61 +18,49 @@ along with DNSSEC-HSTS.  If not, see <https://www.gnu.org/licenses/>.
 */
 /* global chrome, browser */
 'use strict';
-// Based on https://stackoverflow.com/a/45985333
-function onFirefox() {
-  if (typeof chrome !== 'undefined' && typeof browser !== 'undefined') {
-    return true;
-  }
-  return false;
-}
 
-let compatBrowser;
+let unifiedBrowser;
+// let isFirefox;
+let isChrome;
+
 // Firefox supports both browser and chrome; Chromium only supports chrome;
 // Edge only supports browser.  See https://stackoverflow.com/a/45985333
 if (typeof browser !== 'undefined') {
   console.log('Testing for browser/chrome: browser');
-  compatBrowser = browser;
+  // isFirefox = true;
+  unifiedBrowser = browser;
 } else {
   console.log('Testing for browser/chrome: chrome');
-  compatBrowser = chrome;
+  isChrome = true;
+  unifiedBrowser = chrome;
 }
-const pages = {
-  error: compatBrowser.runtime.getURL('/pages/lookup_error/index.html')
-};
+
 const httpLookupApiUrl = 'http://127.0.0.1:8080/lookup';
+const matchHostPattern = 'http://*.bit/*';
 const nativeLookupAppName = 'dnssec_hsts';
-// Only used with native messaging
-let nativePort;
+const pages = {
+  error: unifiedBrowser.runtime.getURL('/pages/lookup_error/index.html')
+};
 const pendingUpgradeChecks = new Map();
+let communicationType = 'native';
+let nativePort;
 
-// host for match pattern for the URLs to upgrade
-const matchHost = '*.bit';
-let communicationType;
-if (onFirefox()) {
-  communicationType = 'native';
-} else {
-  communicationType = 'sync_over_http';
-}
-
-// Builds a match pattern for all HTTP URL's for the specified host
-function buildPattern(host) {
-  return `http://${host}/*`;
-}
 
 function queryUpgradeNative(requestDetails, resolve) {
   const url = new URL(requestDetails.url);
-  const host = url.host;
-  const hostname = url.hostname;
-  const port = url.port;
+  const {host, hostname, port} = url;
   if (!pendingUpgradeChecks.has(host)) {
     pendingUpgradeChecks.set(host, new Set());
 
-    const message = {host: host, hostname: hostname, port: port};
+    const message = {host, hostname, port};
 
     // Send message to the native DNSSEC app
     nativePort.postMessage(message);
   }
-  pendingUpgradeChecks.get(host).add(resolve);
+  pendingUpgradeChecks.get(host).add({
+    url: url,
+    callback: resolve
+  });
 }
 
 function buildBlockingResponse(url, upgrade, lookupError) {
@@ -80,7 +68,7 @@ function buildBlockingResponse(url, upgrade, lookupError) {
     return {redirectUrl: pages.error};
   }
   if (upgrade) {
-    if (onFirefox()) {
+    if (!isChrome) {
       return {upgradeToSecure: true};
     }
     url.protocol = 'https:';
@@ -95,9 +83,7 @@ function buildBlockingResponse(url, upgrade, lookupError) {
 // See Chromium Bug 904365
 function upgradeSyncOverHttp(requestDetails) {
   const url = new URL(requestDetails.url);
-  const host = url.host;
-  const hostname = url.hostname;
-  // const port = url.port;
+  const {host, hostname} = url;
 
   let certResponse;
   const queryFinishedRef = {val: false};
@@ -115,27 +101,27 @@ function upgradeSyncOverHttp(requestDetails) {
   xhr.onreadystatechange = function () {
     if (xhr.readyState === 4) {
       if (xhr.status !== 200) {
-        console.log(`Error received from API: status ${xhr.status}`);
+        console.error(`Error received from API: status ${xhr.status}`);
         lookupError = true;
       }
-
       // Get the certs returned from the API server.
       certResponse = xhr.responseText;
       // Notify the sleep function that we're ready to proceed
       queryFinishedRef.val = true;
     }
   };
+
   try {
     xhr.send();
   } catch (e) {
-    console.log(`Error reaching API: ${e.toString()}`);
+    console.error(`Error reaching API: ${e.toString()}`);
     lookupError = true;
   }
 
   // Check if any certs exist in the result
   const result = certResponse;
-  if (result.trim() !== '') {
-    console.log(`Upgraded via TLSA: ${host}`);
+  if (result.trim()) {
+    console.info(`Upgraded via TLSA: ${host}`);
     upgrade = true;
   }
 
@@ -150,16 +136,22 @@ function upgradeAsyncNative(requestDetails) {
   });
 }
 
-function upgradeCompat(requestDetails) {
+function upgradeUnified(requestDetails, chromiumAsyncResolve) {
   switch (communicationType) {
     case 'native':
+      if (isChrome) {
+        if (typeof chromiumAsyncResolve === 'function') {
+          upgradeAsyncNative(requestDetails).then(chromiumAsyncResolve);
+          return false;
+        }
+        // chromiumAsyncResolve not found, fallback to sync HTTP
+        return upgradeSyncOverHttp(requestDetails);
+      }
       return upgradeAsyncNative(requestDetails);
     default:
       return upgradeSyncOverHttp(requestDetails);
   }
 }
-
-console.log(`Testing for Firefox: ${onFirefox()}`);
 
 // Firefox is the only browser that supports async onBeforeRequest, and
 // therefore is the only browser that we can use native messaging with.
@@ -167,7 +159,7 @@ if (communicationType === 'native') {
   /*
   On startup, connect to the Namecoin "dnssec_hsts" app.
   */
-  nativePort = compatBrowser.runtime.connectNative(nativeLookupAppName);
+  nativePort = unifiedBrowser.runtime.connectNative(nativeLookupAppName);
 
   /*
   Listen for messages from the native DNSSEC app.
@@ -183,23 +175,42 @@ if (communicationType === 'native') {
       return;
     }
 
-    for (const callback of pendingUpgradeChecks.get(host)) {
-      callback(buildBlockingResponse(null, hasTLSA, !ok));
+    for (const query of pendingUpgradeChecks.get(host)) {
+      query.callback(buildBlockingResponse(query.url, hasTLSA, !ok));
     }
-
     pendingUpgradeChecks.delete(host);
   });
 }
 
-// Only use this on initial extension startup; afterwards you should use
-// resetRequestListener instead.
+function getExtraInfoSpecOptional() {
+  const extraInfoSpecOptional = ['blocking'];
+  if (isChrome && communicationType === 'native') {
+    extraInfoSpecOptional[0] = 'asyncBlocking';
+    let validated = false;
+    extraInfoSpecOptional.__defineGetter__(0, () => {
+      if (!validated) {
+        validated = true;
+        return 'blocking';
+      }
+      return 'asyncBlocking';
+    });
+  }
+  return extraInfoSpecOptional;
+}
+
 function attachRequestListener() {
-  // add the listener,
-  // passing the filter argument and "blocking"
-  compatBrowser.webRequest.onBeforeRequest.addListener(
-    upgradeCompat,
-    {urls: [buildPattern(matchHost)]},
-    ['blocking']
+  unifiedBrowser.webRequest.onBeforeRequest.addListener(
+    upgradeUnified,
+    {urls: [matchHostPattern]},
+    getExtraInfoSpecOptional()
   );
 }
-attachRequestListener();
+
+try {
+  attachRequestListener();
+} catch (e) {
+  console.warn(
+    'Exception while attaching listener, fallback to sync HTTP lookup', e);
+  communicationType = 'sync_over_http';
+  attachRequestListener();
+}
