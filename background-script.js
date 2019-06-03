@@ -19,7 +19,7 @@ along with DNSSEC-HSTS.  If not, see <https://www.gnu.org/licenses/>.
 /* global chrome, browser */
 'use strict';
 
-let compatBrowser;
+let unifiedBrowser;
 // let isFirefox;
 let isChrome;
 
@@ -28,41 +28,31 @@ let isChrome;
 if (typeof browser !== 'undefined') {
   console.log('Testing for browser/chrome: browser');
   // isFirefox = true;
-  compatBrowser = browser;
+  unifiedBrowser = browser;
 } else {
   console.log('Testing for browser/chrome: chrome');
   isChrome = true;
-  compatBrowser = chrome;
+  unifiedBrowser = chrome;
 }
 
-const pages = {
-  error: compatBrowser.runtime.getURL('/pages/lookup_error/index.html')
-};
 const httpLookupApiUrl = 'http://127.0.0.1:8080/lookup';
+const matchHostPattern = 'http://*.bit/*';
 const nativeLookupAppName = 'org.namecoin.dnssec_hsts';
-
-// Only used with native messaging
-let nativePort;
+const pages = {
+  error: unifiedBrowser.runtime.getURL('/pages/lookup_error/index.html')
+};
 const pendingUpgradeChecks = new Map();
-
-// host for match pattern for the URLs to upgrade
-const matchHost = '*.bit';
 let communicationType = 'native';
+let nativePort; // Only used with native messaging
 
-// Builds a match pattern for all HTTP URL's for the specified host
-function buildPattern(host) {
-  return `http://${host}/*`;
-}
 
 function queryUpgradeNative(requestDetails, resolve) {
   const url = new URL(requestDetails.url);
-  const host = url.host;
-  const hostname = url.hostname;
-  const port = url.port;
+  const {host, hostname, port} = url;
   if (!pendingUpgradeChecks.has(host)) {
     pendingUpgradeChecks.set(host, new Set());
 
-    const message = {host: host, hostname: hostname, port: port};
+    const message = {host, hostname, port};
 
     // Send message to the native DNSSEC app
     nativePort.postMessage(message);
@@ -77,19 +67,22 @@ function queryUpgradeNative(requestDetails, resolve) {
 // Returns true if timed out, returns false if hostname showed up
 function sleep(milliseconds, queryFinishedRef) {
   // synchronous XMLHttpRequests from Chrome extensions are not blocking event
-  // handlers. That's why we use this
-  // pretty little sleep function to try to get the API response before the
-  // request times out.
-  const start = new Date().getTime();
-  for (let i = 0; i < 1e7; i++) {
-    if ((new Date().getTime() - start) > milliseconds) {
-      return true;
+  // handlers. That's why we use this pretty little sleep function to try to get
+  // the API response before the request times out.
+  const start = Date.now();
+  let lock = true;
+  let timeout;
+  do {
+    if ((Date.now() - start) > milliseconds) {
+      timeout = true;
+      lock = false;
     }
     if (queryFinishedRef.val) {
-      return false;
+      timeout = false;
+      lock = false;
     }
-  }
-  return true;
+  } while (lock);
+  return timeout;
 }
 
 function buildBlockingResponse(url, upgrade, lookupError) {
@@ -112,9 +105,7 @@ function buildBlockingResponse(url, upgrade, lookupError) {
 // See Chromium Bug 904365
 function upgradeSyncOverHttp(requestDetails) {
   const url = new URL(requestDetails.url);
-  const host = url.host;
-  const hostname = url.hostname;
-  // const port = url.port;
+  const {host, hostname} = url;
 
   let certResponse;
   const queryFinishedRef = {val: false};
@@ -132,20 +123,20 @@ function upgradeSyncOverHttp(requestDetails) {
   xhr.onreadystatechange = function () {
     if (xhr.readyState === 4) {
       if (xhr.status !== 200) {
-        console.log(`Error received from API: status ${xhr.status}`);
+        console.error(`Error received from API: status ${xhr.status}`);
         lookupError = true;
       }
-
       // Get the certs returned from the API server.
       certResponse = xhr.responseText;
       // Notify the sleep function that we're ready to proceed
       queryFinishedRef.val = true;
     }
   };
+
   try {
     xhr.send();
   } catch (e) {
-    console.log(`Error reaching API: ${e.toString()}`);
+    console.error(`Error reaching API: ${e.toString()}`);
     lookupError = true;
   }
   // block the request until the API response is received. Block for up to two
@@ -157,8 +148,8 @@ function upgradeSyncOverHttp(requestDetails) {
 
   // Check if any certs exist in the result
   const result = certResponse;
-  if (result.trim() !== '') {
-    console.log(`Upgraded via TLSA: ${host}`);
+  if (result.trim()) {
+    console.info(`Upgraded via TLSA: ${host}`);
     upgrade = true;
   }
 
@@ -173,7 +164,7 @@ function upgradeAsyncNative(requestDetails) {
   });
 }
 
-function upgradeCompat(requestDetails, chromiumAsyncResolve) {
+function upgradeUnified(requestDetails, chromiumAsyncResolve) {
   switch (communicationType) {
     case 'native':
       if (isChrome) {
@@ -194,7 +185,7 @@ function connectNative() {
   /*
   On startup, connect to the Namecoin "dnssec_hsts" app.
   */
-  nativePort = compatBrowser.runtime.connectNative(nativeLookupAppName);
+  nativePort = unifiedBrowser.runtime.connectNative(nativeLookupAppName);
 
   /*
   Listen for messages from the native DNSSEC app.
@@ -234,9 +225,9 @@ function getExtraInfoSpecOptional() {
 }
 
 function attachRequestListener() {
-  compatBrowser.webRequest.onBeforeRequest.addListener(
-    upgradeCompat,
-    {urls: [buildPattern(matchHost)]},
+  unifiedBrowser.webRequest.onBeforeRequest.addListener(
+    upgradeUnified,
+    {urls: [matchHostPattern]},
     getExtraInfoSpecOptional()
   );
 }
