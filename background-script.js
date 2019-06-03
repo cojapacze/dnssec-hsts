@@ -37,13 +37,24 @@ if (typeof browser !== 'undefined') {
   compatBrowser = chrome;
 }
 
+const pages = {
+  error: compatBrowser.runtime.getURL('/pages/lookup_error/index.html')
+};
+const httpLookupApiUrl = 'http://127.0.0.1:8080/lookup';
+const nativeLookupAppName = 'org.namecoin.dnssec_hsts';
+
 // Only used with native messaging
 let nativePort;
 const pendingUpgradeChecks = new Map();
 
 // host for match pattern for the URLs to upgrade
 const matchHost = '*.bit';
-let currentRequestListener;
+let communicationType;
+if (onFirefox()) {
+  communicationType = 'native';
+} else {
+  communicationType = 'sync_over_http';
+}
 
 function queryUpgradeNative(requestDetails, resolve) {
   const url = new URL(requestDetails.url);
@@ -63,12 +74,10 @@ function queryUpgradeNative(requestDetails, resolve) {
 
 // upgradeAsync function returns a Promise
 // which is resolved with the upgrade after the native DNSSEC app replies
-function upgradeAsync(requestDetails) {
-  const asyncCancel = new Promise((resolve, reject) => {
+function upgradeAsyncNative(requestDetails) {
+  return new Promise((resolve, reject) => {
     queryUpgradeNative(requestDetails, resolve, reject);
   });
-
-  return asyncCancel;
 }
 
 // Adapted from Tagide/chrome-bit-domain-extension
@@ -92,8 +101,7 @@ function sleep(milliseconds, queryFinishedRef) {
 
 function buildBlockingResponse(url, upgrade, lookupError) {
   if (lookupError) {
-    return {redirectUrl:
-        compatBrowser.runtime.getURL('/pages/lookup_error/index.html')};
+    return {redirectUrl: pages.error};
   }
   if (upgrade) {
     if (onFirefox()) {
@@ -109,7 +117,7 @@ function buildBlockingResponse(url, upgrade, lookupError) {
 
 // Compatibility for Chromium/Edge, which don't support async onBeforeRequest
 // See Chromium Bug 904365
-function upgradeSync(requestDetails) {
+function upgradeSyncOverHttp(requestDetails) {
   const url = new URL(requestDetails.url);
   const host = url.host;
   const hostname = url.hostname;
@@ -124,8 +132,7 @@ function upgradeSync(requestDetails) {
   // Adapted from Tagide/chrome-bit-domain-extension
   // Get the TLSA records from the API
   const xhr = new XMLHttpRequest();
-  const apiUrl =
-      `http://127.0.0.1:8080/lookup?domain=${encodeURIComponent(hostname)}`;
+  const apiUrl = `${httpLookupApiUrl}?domain=${encodeURIComponent(hostname)}`;
   // synchronous XMLHttpRequest is actually asynchronous
   // check out https://developer.chrome.com/extensions/webRequest
   xhr.open('GET', apiUrl, false);
@@ -166,10 +173,12 @@ function upgradeSync(requestDetails) {
 }
 
 function upgradeCompat(requestDetails) {
-  if (onFirefox()) {
-    return upgradeAsync(requestDetails);
+  switch (communicationType) {
+    case 'native':
+      return upgradeAsyncNative(requestDetails);
+    default:
+      return upgradeSyncOverHttp(requestDetails);
   }
-  return upgradeSync(requestDetails);
 }
 
 // Builds a match pattern for all HTTP URL's for the specified host
@@ -180,17 +189,10 @@ function buildPattern(host) {
 // Only use this on initial extension startup; afterwards you should use
 // resetRequestListener instead.
 function attachRequestListener() {
-  // This shim function is a hack so that we can add a new listener before we
-  // remove the old one.  In theory JavaScript's single-threaded nature makes
-  // that irrelevant, but I don't trust browsers to behave sanely on this.
-  currentRequestListener = function (requestDetails) {
-    return upgradeCompat(requestDetails);
-  };
-
   // add the listener,
   // passing the filter argument and "blocking"
   compatBrowser.webRequest.onBeforeRequest.addListener(
-    currentRequestListener,
+    upgradeCompat,
     {urls: [buildPattern(matchHost)]},
     ['blocking']
   );
@@ -200,11 +202,11 @@ console.log(`Testing for Firefox: ${onFirefox()}`);
 
 // Firefox is the only browser that supports async onBeforeRequest, and
 // therefore is the only browser that we can use native messaging with.
-if (onFirefox()) {
+if (communicationType === 'native') {
   /*
   On startup, connect to the Namecoin "dnssec_hsts" app.
   */
-  nativePort = compatBrowser.runtime.connectNative('org.namecoin.dnssec_hsts');
+  nativePort = compatBrowser.runtime.connectNative(nativeLookupAppName);
 
   /*
   Listen for messages from the native DNSSEC app.
@@ -220,8 +222,8 @@ if (onFirefox()) {
       return;
     }
 
-    for (const item of pendingUpgradeChecks.get(host)) {
-      item(buildBlockingResponse(null, hasTLSA, !ok));
+    for (const callback of pendingUpgradeChecks.get(host)) {
+      callback(buildBlockingResponse(null, hasTLSA, !ok));
     }
 
     pendingUpgradeChecks.delete(host);
