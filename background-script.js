@@ -56,6 +56,11 @@ if (onFirefox()) {
   communicationType = 'sync_over_http';
 }
 
+// Builds a match pattern for all HTTP URL's for the specified host
+function buildPattern(host) {
+  return `http://${host}/*`;
+}
+
 function queryUpgradeNative(requestDetails, resolve) {
   const url = new URL(requestDetails.url);
   const host = url.host;
@@ -70,14 +75,6 @@ function queryUpgradeNative(requestDetails, resolve) {
     nativePort.postMessage(message);
   }
   pendingUpgradeChecks.get(host).add(resolve);
-}
-
-// upgradeAsync function returns a Promise
-// which is resolved with the upgrade after the native DNSSEC app replies
-function upgradeAsyncNative(requestDetails) {
-  return new Promise((resolve, reject) => {
-    queryUpgradeNative(requestDetails, resolve, reject);
-  });
 }
 
 // Adapted from Tagide/chrome-bit-domain-extension
@@ -172,6 +169,14 @@ function upgradeSyncOverHttp(requestDetails) {
   return buildBlockingResponse(url, upgrade, lookupError);
 }
 
+// upgradeAsync function returns a Promise
+// which is resolved with the upgrade after the native DNSSEC app replies
+function upgradeAsyncNative(requestDetails) {
+  return new Promise((resolve, reject) => {
+    queryUpgradeNative(requestDetails, resolve, reject);
+  });
+}
+
 function upgradeCompat(requestDetails) {
   switch (communicationType) {
     case 'native':
@@ -179,23 +184,6 @@ function upgradeCompat(requestDetails) {
     default:
       return upgradeSyncOverHttp(requestDetails);
   }
-}
-
-// Builds a match pattern for all HTTP URL's for the specified host
-function buildPattern(host) {
-  return `http://${host}/*`;
-}
-
-// Only use this on initial extension startup; afterwards you should use
-// resetRequestListener instead.
-function attachRequestListener() {
-  // add the listener,
-  // passing the filter argument and "blocking"
-  compatBrowser.webRequest.onBeforeRequest.addListener(
-    upgradeCompat,
-    {urls: [buildPattern(matchHost)]},
-    ['blocking']
-  );
 }
 
 console.log(`Testing for Firefox: ${onFirefox()}`);
@@ -230,4 +218,15 @@ if (communicationType === 'native') {
   });
 }
 
+// Only use this on initial extension startup; afterwards you should use
+// resetRequestListener instead.
+function attachRequestListener() {
+  // add the listener,
+  // passing the filter argument and "blocking"
+  compatBrowser.webRequest.onBeforeRequest.addListener(
+    upgradeCompat,
+    {urls: [buildPattern(matchHost)]},
+    ['blocking']
+  );
+}
 attachRequestListener();
