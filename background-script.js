@@ -196,17 +196,6 @@ function attachRequestListener() {
   );
 }
 
-// Attaches a new listener based on the current matchHost, and then removes the
-// old listener.  The ordering is intended to prevent race conditions where the
-// protection is disabled.
-// function resetRequestListener() {
-//   const oldListener = currentRequestListener;
-
-//   attachRequestListener();
-
-//   compatBrowser.webRequest.onBeforeRequest.removeListener(oldListener);
-// }
-
 console.log(`Testing for Firefox: ${onFirefox()}`);
 
 // Firefox is the only browser that supports async onBeforeRequest, and
