@@ -18,22 +18,20 @@ along with DNSSEC-HSTS.  If not, see <https://www.gnu.org/licenses/>.
 */
 /* global chrome, browser */
 'use strict';
-// Based on https://stackoverflow.com/a/45985333
-function onFirefox() {
-  if (typeof chrome !== 'undefined' && typeof browser !== 'undefined') {
-    return true;
-  }
-  return false;
-}
 
 let compatBrowser;
+// let isFirefox;
+let isChrome;
+
 // Firefox supports both browser and chrome; Chromium only supports chrome;
 // Edge only supports browser.  See https://stackoverflow.com/a/45985333
 if (typeof browser !== 'undefined') {
   console.log('Testing for browser/chrome: browser');
+  // isFirefox = true;
   compatBrowser = browser;
 } else {
   console.log('Testing for browser/chrome: chrome');
+  isChrome = true;
   compatBrowser = chrome;
 }
 
@@ -49,12 +47,7 @@ const pendingUpgradeChecks = new Map();
 
 // host for match pattern for the URLs to upgrade
 const matchHost = '*.bit';
-let communicationType;
-if (onFirefox()) {
-  communicationType = 'native';
-} else {
-  communicationType = 'sync_over_http';
-}
+let communicationType = 'native';
 
 // Builds a match pattern for all HTTP URL's for the specified host
 function buildPattern(host) {
@@ -74,7 +67,10 @@ function queryUpgradeNative(requestDetails, resolve) {
     // Send message to the native DNSSEC app
     nativePort.postMessage(message);
   }
-  pendingUpgradeChecks.get(host).add(resolve);
+  pendingUpgradeChecks.get(host).add({
+    url: url,
+    callback: resolve
+  });
 }
 
 // Adapted from Tagide/chrome-bit-domain-extension
@@ -101,7 +97,7 @@ function buildBlockingResponse(url, upgrade, lookupError) {
     return {redirectUrl: pages.error};
   }
   if (upgrade) {
-    if (onFirefox()) {
+    if (!isChrome) {
       return {upgradeToSecure: true};
     }
     url.protocol = 'https:';
@@ -177,20 +173,24 @@ function upgradeAsyncNative(requestDetails) {
   });
 }
 
-function upgradeCompat(requestDetails) {
+function upgradeCompat(requestDetails, chromiumAsyncResolve) {
   switch (communicationType) {
     case 'native':
+      if (isChrome) {
+        if (typeof chromiumAsyncResolve === 'function') {
+          upgradeAsyncNative(requestDetails).then(chromiumAsyncResolve);
+          return false;
+        }
+        // chromiumAsyncResolve not found, fallback to sync HTTP
+        return upgradeSyncOverHttp(requestDetails);
+      }
       return upgradeAsyncNative(requestDetails);
     default:
       return upgradeSyncOverHttp(requestDetails);
   }
 }
 
-console.log(`Testing for Firefox: ${onFirefox()}`);
-
-// Firefox is the only browser that supports async onBeforeRequest, and
-// therefore is the only browser that we can use native messaging with.
-if (communicationType === 'native') {
+function connectNative() {
   /*
   On startup, connect to the Namecoin "dnssec_hsts" app.
   */
@@ -210,23 +210,45 @@ if (communicationType === 'native') {
       return;
     }
 
-    for (const callback of pendingUpgradeChecks.get(host)) {
-      callback(buildBlockingResponse(null, hasTLSA, !ok));
+    for (const query of pendingUpgradeChecks.get(host)) {
+      query.callback(buildBlockingResponse(query.url, hasTLSA, !ok));
     }
-
     pendingUpgradeChecks.delete(host);
   });
 }
 
-// Only use this on initial extension startup; afterwards you should use
-// resetRequestListener instead.
+function getExtraInfoSpecOptional() {
+  const extraInfoSpecOptional = ['blocking'];
+  if (isChrome && communicationType === 'native') {
+    extraInfoSpecOptional[0] = 'asyncBlocking';
+    let validated = false;
+    extraInfoSpecOptional.__defineGetter__(0, () => {
+      if (!validated) {
+        validated = true;
+        return 'blocking';
+      }
+      return 'asyncBlocking';
+    });
+  }
+  return extraInfoSpecOptional;
+}
+
 function attachRequestListener() {
-  // add the listener,
-  // passing the filter argument and "blocking"
   compatBrowser.webRequest.onBeforeRequest.addListener(
     upgradeCompat,
     {urls: [buildPattern(matchHost)]},
-    ['blocking']
+    getExtraInfoSpecOptional()
   );
 }
-attachRequestListener();
+
+try {
+  if (communicationType === 'native') {
+    connectNative();
+  }
+  attachRequestListener();
+} catch (e) {
+  console.warn(
+    'Exception while attaching listener, fallback to sync HTTP lookup', e);
+  communicationType = 'sync_over_http';
+  attachRequestListener();
+}
