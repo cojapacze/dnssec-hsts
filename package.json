@@ -1,0 +1,22 @@
+{
+  "name": "dnssec-hsts",
+  "version": "0.2.0",
+  "description": "DNSSEC-HSTS is a WebExtension that upgrades HTTP to HTTPS (simulating HSTS) for websites that support DANE (i.e. websites that list a TLSA record for TCP port 443). This is a reasonably good heuristic for preventing sslstrip-style attacks.",
+  "scripts": {
+    "pretest": "eslint .",
+    "test": "echo \"Error: no test specified\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/namecoin/dnssec-hsts.git"
+  },
+  "author": "namecoin.org",
+  "license": "GPL-3.0",
+  "bugs": {
+    "url": "https://github.com/namecoin/dnssec-hsts/issues"
+  },
+  "homepage": "https://github.com/namecoin/dnssec-hsts#readme",
+  "devDependencies": {
+    "eslint": "^5.16.0"
+  }
+}

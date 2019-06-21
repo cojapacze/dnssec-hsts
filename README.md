@@ -13,7 +13,7 @@ You'll first need to install the [native (Go) component](https://github.com/name
 ~~~
 git clone https://github.com/namecoin/dnssec-hsts.git
 sudo rm -rf /usr/share/webext/dnssec-hsts/
-sudo cp -a ./dnssec-hsts /usr/share/webext/dnssec-hsts
+sudo cp -a ./dnssec-hsts/generic /usr/share/webext/dnssec-hsts
 sudo ln -s -T /usr/share/webext/dnssec-hsts "/usr/share/mozilla/extensions/{ec8030f7-c20a-464f-9b0e-13a3a9e97384}/dnssec-hsts"
 ~~~
 
@@ -24,7 +24,7 @@ If you're on another OS, you'll need to disable XPI extension signature checking
 ~~~
 git clone https://github.com/namecoin/dnssec-hsts.git
 cd dnssec-hsts
-zip dnssec-hsts@namecoin.org.xpi
+zip -r dnssec-hsts@namecoin.org.xpi generic
 ~~~
 
 Then open `dnssec-hsts@namecoin.org.xpi` in Firefox, and accept the extension installation dialog.
@@ -42,7 +42,7 @@ Then, if you're on GNU/Linux, do this:
 ~~~
 git clone https://github.com/namecoin/dnssec-hsts.git
 sudo rm -rf /usr/share/webext/dnssec-hsts/
-sudo cp -a ./dnssec-hsts /usr/share/webext/dnssec-hsts
+sudo cp -a ./dnssec-hsts/generic /usr/share/webext/dnssec-hsts
 sudo ln -s -T /usr/share/webext/dnssec-hsts /usr/share/chromium/extensions/dnssec-hsts
 ~~~
 
